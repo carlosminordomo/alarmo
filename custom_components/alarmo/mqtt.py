@@ -4,6 +4,7 @@ import json
 import logging
 
 from homeassistant.core import (
+    Context,
     HomeAssistant,
     callback,
 )
@@ -294,6 +295,8 @@ class MqttHandler:
             "Received command %s",
             command,
         )
+        # No Home Assistant user, rather than the last one that used the entity.
+        entity.async_set_context(Context())
 
         if command == command_payloads[const.COMMAND_DISARM]:
             entity.alarm_disarm(code, skip_code=skip_code)

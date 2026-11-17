@@ -45,12 +45,14 @@ class EventHandler:
             const.EVENT_COMMAND_NOT_ALLOWED,
             const.EVENT_INVALID_CODE_PROVIDED,
             const.EVENT_NO_CODE_PROVIDED,
+            const.EVENT_TOO_MANY_ATTEMPTS,
         ]:
             reasons = {
                 const.EVENT_FAILED_TO_ARM: "open_sensors",
                 const.EVENT_COMMAND_NOT_ALLOWED: "not_allowed",
                 const.EVENT_INVALID_CODE_PROVIDED: "invalid_code",
                 const.EVENT_NO_CODE_PROVIDED: "invalid_code",
+                const.EVENT_TOO_MANY_ATTEMPTS: "too_many_attempts",
             }
 
             data = dict(
@@ -66,6 +68,10 @@ class EventHandler:
                 del data["open_sensors"]
 
             self.hass.bus.async_fire("alarmo_failed_to_arm", data)
+
+        elif event == const.EVENT_WRONG_CODES:
+            data = {**args, "area_id": area_id, "entity_id": alarm_entity.entity_id}
+            self.hass.bus.async_fire("alarmo_wrong_codes", data)
 
         elif event in [const.EVENT_ARM, const.EVENT_DISARM]:
             data = dict(

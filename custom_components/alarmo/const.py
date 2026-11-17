@@ -95,6 +95,8 @@ EVENT_FAILED_TO_ARM = "failed_to_arm"
 EVENT_COMMAND_NOT_ALLOWED = "command_not_allowed"
 EVENT_INVALID_CODE_PROVIDED = "invalid_code_provided"
 EVENT_NO_CODE_PROVIDED = "no_code_provided"
+EVENT_TOO_MANY_ATTEMPTS = "too_many_attempts"
+EVENT_WRONG_CODES = "wrong_codes"
 EVENT_TRIGGER_TIME_EXPIRED = "trigger_time_expired"
 EVENT_READY_TO_ARM_MODES_CHANGED = "ready_to_arm_modes_changed"
 
@@ -119,6 +121,8 @@ ATTR_IGNORE_BLOCKING_SENSORS_AFTER_TRIGGER = "ignore_blocking_sensors_after_trig
 
 ATTR_REMOVE = "remove"
 ATTR_IS_OVERRIDE_CODE = "is_override_code"
+ATTR_CAN_MANAGE_USERS = "can_manage_users"
+ATTR_HA_USER_ID = "ha_user_id"
 ATTR_AREA_LIMIT = "area_limit"
 ATTR_CODE_FORMAT = "code_format"
 ATTR_CODE_LENGTH = "code_length"

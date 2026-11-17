@@ -41,6 +41,7 @@ from homeassistant.components.alarm_control_panel import (
 )
 
 from . import const
+from .code_guard import FREE_FAILURES, code_guard
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -340,6 +341,11 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
             self._changed_by = None
             return True, None
 
+        if to_state == AlarmControlPanelState.DISARMED and self._cancels_arming():
+            _LOGGER.debug("Cancelling the exit delay, bypassing code validation.")
+            self._changed_by = None
+            return True, None
+
         if (
             to_state != AlarmControlPanelState.DISARMED
             and self._state == AlarmControlPanelState.DISARMED
@@ -362,12 +368,37 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
         if not code or len(code) < 1:
             _LOGGER.debug("No code provided, but code is required. Rejecting command.")
             return False, const.EVENT_NO_CODE_PROVIDED
-        # resolve user
+
+        ha_user_id = self._context.user_id if self._context else None
+        guard = code_guard(self.hass, ha_user_id)
+        # Held across the check, so codes sent together are counted one by one.
+        async with guard.lock:
+            if not guard.allows():
+                return False, const.EVENT_TOO_MANY_ATTEMPTS
+            user = await self._async_user_allowed(code, to_state)
+            if not user:
+                guard.failed()
+                if guard.failures == FREE_FAILURES:
+                    dispatcher_send(
+                        self.hass,
+                        "alarmo_event",
+                        const.EVENT_WRONG_CODES,
+                        self.area_id,
+                        {"ha_user_id": ha_user_id},
+                    )
+                return False, const.EVENT_INVALID_CODE_PROVIDED
+            guard.passed()
+
+        self._changed_by = user[ATTR_NAME]
+        return True, user
+
+    async def _async_user_allowed(self, code, to_state):
+        """Return the user with this code if they may make this change, else None."""
         user = await self.hass.data[const.DOMAIN][
             "coordinator"
         ].async_authenticate_user(code)
         if not user:
-            return False, const.EVENT_INVALID_CODE_PROVIDED
+            return None
 
         # area permission check
         allowed_areas = user.get(const.ATTR_AREA_LIMIT)
@@ -383,7 +414,7 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
                     "User %s has no permission to arm/disarm this area.",
                     user[ATTR_NAME],
                 )
-                return False, const.EVENT_INVALID_CODE_PROVIDED
+                return None
 
         # action permission check
         if to_state == AlarmControlPanelState.DISARMED:
@@ -393,7 +424,7 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
                     "User %s has no permission to disarm the alarm.",
                     user.get(ATTR_NAME, "unknown user"),
                 )
-                return False, const.EVENT_INVALID_CODE_PROVIDED
+                return None
         elif to_state in const.ARM_MODES:
             if not user.get("can_arm", False):
                 # user is not allowed to arm the alarm
@@ -401,13 +432,17 @@ class AlarmoBaseEntity(AlarmControlPanelEntity, RestoreEntity):
                     "User %s has no permission to arm the alarm.",
                     user.get(ATTR_NAME, "unknown user"),
                 )
-                return False, const.EVENT_INVALID_CODE_PROVIDED
+                return None
         else:
-            return False, const.EVENT_INVALID_CODE_PROVIDED
+            return None
+        return user
 
-        # success
-        self._changed_by = user[ATTR_NAME]
-        return True, user
+    def _cancels_arming(self):
+        """Whether disarming would only stop an exit delay begun while disarmed."""
+        return (
+            self._state == AlarmControlPanelState.ARMING
+            and self._revert_state == AlarmControlPanelState.DISARMED
+        )
 
     async def async_service_disarm_handler(self, code, context_id=None):
         """Handle external disarm request from alarmo.disarm service."""
@@ -1238,6 +1273,16 @@ class AlarmoMasterEntity(AlarmoBaseEntity):
             next_state = AlarmControlPanelState.TRIGGERED
 
         return next_state
+
+    def _cancels_arming(self):
+        """Whether disarming would only stop exit delays begun while disarmed."""
+        areas = self.hass.data[const.DOMAIN]["areas"].values()
+        return any(
+            area.state == AlarmControlPanelState.ARMING for area in areas
+        ) and all(
+            area.state == AlarmControlPanelState.DISARMED or area._cancels_arming()
+            for area in areas
+        )
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
