@@ -382,11 +382,18 @@ class SensorHandler:
         new_state = parse_sensor_state(event.data["new_state"])
         sensor_config = self._config[entity]
         if old_state == STATE_UNKNOWN:
+            alarm_state = self.hass.data[const.DOMAIN]["areas"][
+                sensor_config["area"]
+            ].state
             if new_state not in (STATE_OPEN, STATE_UNAVAILABLE) or (
-                sensor_config[ATTR_ALLOW_OPEN] and new_state == STATE_OPEN
+                sensor_config[ATTR_ALLOW_OPEN]
+                and new_state == STATE_OPEN
+                and alarm_state
+                not in (*const.ARM_MODES, AlarmControlPanelState.PENDING)
             ):
                 # transition to a safe state, or to open while the sensor is
-                #   allowed to be open — treat as initial state
+                #   allowed to be open and the alarm is not armed yet
+                #   — treat as initial state
                 _LOGGER.debug(
                     "Initial state for %s is %s",
                     entity,
@@ -402,7 +409,7 @@ class SensorHandler:
                     "evaluating as live state change",
                     entity,
                     new_state,
-                    self.hass.data[const.DOMAIN]["areas"][sensor_config["area"]].state,
+                    alarm_state,
                 )
         if old_state == new_state:
             # not a state change - ignore
@@ -756,13 +763,6 @@ class SensorHandler:
 
             if sensor_state == STATE_UNKNOWN:
                 # Skip unknown sensors - they'll be handled when they become known
-                continue
-
-            if sensor_config[ATTR_ALLOW_OPEN] and sensor_state == STATE_OPEN:
-                _LOGGER.debug(
-                    "Sensor %s is open with allow_open, skipping startup eval",
-                    entity_id,
-                )
                 continue
 
             # Check if sensor state is allowed in current alarm state

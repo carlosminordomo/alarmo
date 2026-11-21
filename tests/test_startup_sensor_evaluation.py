@@ -4,7 +4,10 @@ from typing import Any
 
 import pytest
 from homeassistant.core import State
-from pytest_homeassistant_custom_component.common import mock_restore_cache
+from pytest_homeassistant_custom_component.common import (
+    mock_restore_cache,
+    async_capture_events,
+)
 
 from tests.helpers import (
     advance_time,
@@ -434,33 +437,33 @@ async def test_sensor_transition_from_unknown_to_closed_does_not_trigger(
 
 
 @pytest.mark.asyncio
-async def test_sensor_unknown_to_open_with_allow_open_does_not_trigger(
-    hass: Any, enable_custom_integrations: Any
+@pytest.mark.parametrize(
+    ("entity_id", "create_sensor"),
+    [
+        (GENERIC_DOOR_SENSOR, SensorFactory.create_door_sensor),
+        (GENERIC_MOTION_SENSOR, SensorFactory.create_motion_sensor),
+    ],
+)
+async def test_sensor_unknown_to_open_with_allow_open_while_armed_triggers(
+    hass: Any,
+    enable_custom_integrations: Any,
+    entity_id: str,
+    create_sensor: Any,
 ) -> None:
-    """Test that unknown to open does not trigger when allow_open is set.
+    """Test that unknown to open triggers while armed, even with allow_open.
 
-    Scenario: User arms with a window open (allow_open=True), restarts HA.
-    Sensor was unknown on restart, then recovers to open.
-    Expected: Alarm stays armed (allow_open is respected for unknown->open).
+    Scenario: Door or motion sensor with allow_open=True, HA restarts with the
+    alarm armed. Sensor was unknown on restart, then recovers to open.
+    Expected: Alarm triggers (allow_open only applies while arming).
     """
-    area = AreaFactory.create_area(
-        area_id="area_1",
-        name="Test Area 1",
-        armed_away_entry_time=10,
-    )
-    sensor_config = SensorFactory.create_door_sensor(
-        entity_id=GENERIC_DOOR_SENSOR,
-        name="Generic Area 1 Door",
+    area = AreaFactory.create_area(area_id="area_1", name="Test Area 1")
+    sensor_config = create_sensor(
+        entity_id=entity_id,
         area="area_1",
         modes=["armed_away", "armed_home"],
-        always_on=False,
-        auto_bypass=False,
-        auto_bypass_modes=[],
         allow_open=True,
-        trigger_unavailable=False,
-        arm_on_close=False,
         use_exit_delay=True,
-        use_entry_delay=True,
+        use_entry_delay=False,
     )
     storage, entry = setup_alarmo_entry(
         hass,
@@ -479,7 +482,7 @@ async def test_sensor_unknown_to_open_with_allow_open_does_not_trigger(
 
     with patch_alarmo_integration_dependencies(storage):
         # Set sensor to unknown BEFORE integration starts
-        hass.states.async_set(GENERIC_DOOR_SENSOR, "unknown")
+        hass.states.async_set(entity_id, "unknown")
         await hass.async_block_till_done()
 
         # Setup the integration
@@ -491,13 +494,156 @@ async def test_sensor_unknown_to_open_with_allow_open_does_not_trigger(
         assert_alarm_state(hass, ALARM_ENTITY, "armed_away")
 
         # Change sensor from unknown to open
-        #   allow_open=True means this should be treated as initial state
-        hass.states.async_set(GENERIC_DOOR_SENSOR, "on")
+        hass.states.async_set(entity_id, "on")
         await hass.async_block_till_done()
         await advance_time(hass, 1)
 
-        # Alarm should still be armed (allow_open respected)
+        # Alarm should trigger (allow_open does not apply once armed)
+        assert_alarm_state(hass, ALARM_ENTITY, "triggered")
+
+        # Cleanup
+        await hass.services.async_call(
+            "alarmo",
+            "disarm",
+            {
+                "entity_id": ALARM_ENTITY,
+                "code": "1234",
+            },
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+        assert_alarm_state(hass, ALARM_ENTITY, "disarmed")
+        await cleanup_timers(hass)
+
+
+@pytest.mark.asyncio
+async def test_sensor_unknown_to_open_with_allow_open_while_arming_is_ignored(
+    hass: Any, enable_custom_integrations: Any
+) -> None:
+    """Test that unknown to open is ignored while arming when allow_open is set.
+
+    Scenario: Motion sensor with allow_open=True and no exit delay, HA restarts
+    while the alarm is arming. Sensor was unknown, then recovers to open.
+    Expected: Arming carries on and the alarm arms.
+    """
+    area = AreaFactory.create_area(
+        area_id="area_1", name="Test Area 1", armed_away_exit_time=10
+    )
+    sensor_config = SensorFactory.create_motion_sensor(
+        entity_id=GENERIC_MOTION_SENSOR,
+        name="Generic Area 1 Motion",
+        area="area_1",
+        modes=["armed_away", "armed_home"],
+        allow_open=True,
+        use_exit_delay=False,
+        use_entry_delay=False,
+    )
+    storage, entry = setup_alarmo_entry(
+        hass,
+        areas=[area],
+        sensors=[sensor_config],
+        entry_id="test_unknown_to_open_allow_open_arming",
+    )
+
+    # Mock the alarm entity's last state
+    mock_restore_cache(
+        hass,
+        [
+            State(ALARM_ENTITY, "arming", {"arm_mode": "armed_away"}),
+        ],
+    )
+
+    with patch_alarmo_integration_dependencies(storage):
+        # Set sensor to unknown BEFORE integration starts
+        hass.states.async_set(GENERIC_MOTION_SENSOR, "unknown")
+        await hass.async_block_till_done()
+
+        # Setup the integration
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        await advance_time(hass, 1)
+        assert_alarm_state(hass, ALARM_ENTITY, "arming")
+
+        # Change sensor from unknown to open while arming
+        failures = async_capture_events(hass, "alarmo_failed_to_arm")
+        hass.states.async_set(GENERIC_MOTION_SENSOR, "on")
+        await hass.async_block_till_done()
+        await advance_time(hass, 1)
+        assert_alarm_state(hass, ALARM_ENTITY, "arming")
+        assert not failures
+
+        # Exit delay ends with the sensor still open: the alarm arms
+        await advance_time(hass, area["modes"]["armed_away"]["exit_time"] + 1)
         assert_alarm_state(hass, ALARM_ENTITY, "armed_away")
+
+        # Cleanup
+        await hass.services.async_call(
+            "alarmo",
+            "disarm",
+            {
+                "entity_id": ALARM_ENTITY,
+                "code": "1234",
+            },
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+        assert_alarm_state(hass, ALARM_ENTITY, "disarmed")
+        await cleanup_timers(hass)
+
+
+@pytest.mark.asyncio
+async def test_sensor_unknown_to_open_with_allow_open_while_pending_triggers(
+    hass: Any, enable_custom_integrations: Any
+) -> None:
+    """Test that unknown to open cuts the entry delay short, even with allow_open.
+
+    Scenario: HA restarts with the alarm pending. A motion sensor with
+    allow_open=True and no entry delay was unknown, then recovers to open.
+    Expected: Alarm triggers right away (allow_open only applies while arming).
+    """
+    area = AreaFactory.create_area(
+        area_id="area_1", name="Test Area 1", armed_away_entry_time=30
+    )
+    sensor_config = SensorFactory.create_motion_sensor(
+        entity_id=GENERIC_MOTION_SENSOR,
+        name="Generic Area 1 Motion",
+        area="area_1",
+        modes=["armed_away", "armed_home"],
+        allow_open=True,
+        use_exit_delay=True,
+        use_entry_delay=False,
+    )
+    storage, entry = setup_alarmo_entry(
+        hass,
+        areas=[area],
+        sensors=[sensor_config],
+        entry_id="test_unknown_to_open_allow_open_pending",
+    )
+
+    # Mock the alarm entity's last state
+    mock_restore_cache(
+        hass,
+        [
+            State(ALARM_ENTITY, "pending", {"arm_mode": "armed_away"}),
+        ],
+    )
+
+    with patch_alarmo_integration_dependencies(storage):
+        # Set sensor to unknown BEFORE integration starts
+        hass.states.async_set(GENERIC_MOTION_SENSOR, "unknown")
+        await hass.async_block_till_done()
+
+        # Setup the integration
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        await advance_time(hass, 1)
+        assert_alarm_state(hass, ALARM_ENTITY, "pending")
+
+        # Change sensor from unknown to open during the entry delay
+        hass.states.async_set(GENERIC_MOTION_SENSOR, "on")
+        await hass.async_block_till_done()
+        await advance_time(hass, 1)
+        assert_alarm_state(hass, ALARM_ENTITY, "triggered")
 
         # Cleanup
         await hass.services.async_call(
@@ -762,27 +908,31 @@ async def test_sensor_closed_on_startup_no_trigger(
 
 
 @pytest.mark.asyncio
-async def test_allow_open_sensor_on_startup_does_not_trigger(
-    hass: Any, enable_custom_integrations: Any
+@pytest.mark.parametrize(
+    ("entity_id", "create_sensor"),
+    [
+        (GENERIC_DOOR_SENSOR, SensorFactory.create_door_sensor),
+        (GENERIC_MOTION_SENSOR, SensorFactory.create_motion_sensor),
+    ],
+)
+async def test_allow_open_sensor_open_on_startup_while_armed_triggers(
+    hass: Any,
+    enable_custom_integrations: Any,
+    entity_id: str,
+    create_sensor: Any,
 ) -> None:
-    """Test that an allow_open sensor open on startup does NOT trigger the alarm.
+    """Test that an allow_open sensor open on startup triggers the alarm.
 
-    Scenario: Sensor with allow_open=True is open when integration starts
+    Scenario: Door or motion sensor with allow_open=True is open when integration starts
     with alarm in armed state.
-    Expected: Alarm stays armed (allow_open sensors are permitted to be open).
+    Expected: Alarm triggers (allow_open only applies while arming).
     """
     area = AreaFactory.create_area(area_id="area_1", name="Test Area 1")
-    sensor_config = SensorFactory.create_door_sensor(
-        entity_id=GENERIC_DOOR_SENSOR,
-        name="Generic Area 1 Door",
+    sensor_config = create_sensor(
+        entity_id=entity_id,
         area="area_1",
         modes=["armed_away", "armed_home"],
-        always_on=False,
-        auto_bypass=False,
-        auto_bypass_modes=[],
-        allow_open=True,  # Sensor is allowed to be open
-        trigger_unavailable=False,
-        arm_on_close=False,
+        allow_open=True,  # Sensor may be open while arming
         use_exit_delay=False,
         use_entry_delay=False,  # Immediate trigger to make test stricter
     )
@@ -803,7 +953,7 @@ async def test_allow_open_sensor_on_startup_does_not_trigger(
 
     with patch_alarmo_integration_dependencies(storage):
         # Set sensor to open BEFORE integration starts
-        hass.states.async_set(GENERIC_DOOR_SENSOR, "on")
+        hass.states.async_set(entity_id, "on")
         await hass.async_block_till_done()
 
         # Setup the integration
@@ -813,8 +963,8 @@ async def test_allow_open_sensor_on_startup_does_not_trigger(
         # Give the startup evaluation time to process
         await advance_time(hass, 2)
 
-        # Alarm should still be armed (allow_open sensor should be ignored)
-        assert_alarm_state(hass, ALARM_ENTITY, "armed_away")
+        # Alarm should trigger (allow_open does not apply once armed)
+        assert_alarm_state(hass, ALARM_ENTITY, "triggered")
 
         # Cleanup
         await hass.services.async_call(

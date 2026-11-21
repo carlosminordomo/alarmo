@@ -334,6 +334,63 @@ async def test_arm_with_exit_delay_and_allow_open(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("armed_away_exit_time", [0, 20])
+async def test_allow_open_motion_sensor_arms_open_and_triggers_on_reopen(
+    hass: Any, enable_custom_integrations: Any, armed_away_exit_time: int
+):
+    """Test arming with an open allow_open motion sensor, then a new detection.
+
+    The alarm arms while the sensor is on, ignores it while it stays on, and
+    triggers once it goes off and on again.
+    """
+    sensor = "binary_sensor.generic_area_1_motion_sensor"
+
+    area = AreaFactory.create_area(
+        area_id="area_1",
+        modes=["armed_away"],
+        armed_away_exit_time=armed_away_exit_time,
+        armed_away_enabled=True,
+    )
+    sensor_config = SensorFactory.create_motion_sensor(
+        entity_id=sensor, allow_open=True, use_exit_delay=True, use_entry_delay=False
+    )
+    storage, entry = setup_alarmo_entry(
+        hass,
+        areas=[area],
+        sensors=[sensor_config],
+        entry_id="test_allow_open_motion_sensor_reopen",
+    )
+    with patch_alarmo_integration_dependencies(storage):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        hass.states.async_set(sensor, "on")
+        await hass.async_block_till_done()
+        await hass.services.async_call(
+            "alarmo",
+            "arm",
+            {"entity_id": ALARM_ENTITY, "code": "1234"},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+        await advance_time(hass, armed_away_exit_time + 1)
+        assert_alarm_state(hass, ALARM_ENTITY, "armed_away")
+
+        await advance_time(hass, 30)
+        assert_alarm_state(hass, ALARM_ENTITY, "armed_away")
+
+        hass.states.async_set(sensor, "off")
+        await hass.async_block_till_done()
+        await advance_time(hass, 1)
+        assert_alarm_state(hass, ALARM_ENTITY, "armed_away")
+
+        hass.states.async_set(sensor, "on")
+        await hass.async_block_till_done()
+        await advance_time(hass, 1)
+        assert_alarm_state(hass, ALARM_ENTITY, "triggered")
+        await cleanup_timers(hass)
+
+
+@pytest.mark.asyncio
 async def test_sensor_always_on_triggers_when_disarmed(
     hass: Any, enable_custom_integrations: Any
 ):

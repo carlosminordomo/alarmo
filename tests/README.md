@@ -37,6 +37,7 @@ OR to run a single test in a file:
 | `test_arm_with_invalid_code` | Invalid code handling |
 | `test_armed_away_entry_delay_and_trigger` | Entry delay and trigger behavior |
 | `test_arm_with_exit_delay_and_allow_open` | Exit delay with allow_open sensors |
+| `test_allow_open_motion_sensor_arms_open_and_triggers_on_reopen` | Arms with an open allow_open motion sensor, triggers once it goes off and on again |
 | `test_sensor_always_on_triggers_when_disarmed` | Always-on sensors trigger when disarmed |
 | `test_arm_away_with_exit_delay` | Exit delay functionality |
 | `test_arm_blocked_with_triggered_sensor_and_no_allow_open` | Sensor blocking arming behavior |
@@ -165,6 +166,10 @@ OR to run a single test in a file:
 | `test_sensor_group_on_startup_meets_threshold` | Sensor group on startup meets threshold and triggers alarm |
 | `test_sensor_group_on_startup_below_threshold` | Sensor group on startup below threshold does not trigger alarm |
 | `test_sensor_closed_on_startup_no_trigger` | Closed sensor on startup does not trigger alarm |
+| `test_sensor_unknown_to_open_with_allow_open_while_armed_triggers` | allow_open sensor going unknown to open while armed triggers alarm |
+| `test_sensor_unknown_to_open_with_allow_open_while_arming_is_ignored` | allow_open sensor going unknown to open while arming does not fail arming |
+| `test_sensor_unknown_to_open_with_allow_open_while_pending_triggers` | allow_open sensor going unknown to open while pending triggers alarm |
+| `test_allow_open_sensor_open_on_startup_while_armed_triggers` | allow_open sensor open on startup while armed triggers alarm |
 
 ### **Not Covered:**
 
